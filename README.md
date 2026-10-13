@@ -16,16 +16,25 @@ Your whole OneDrive shows up in a folder, but no file takes disk space until it 
 - Concurrent opens of the same file share a single download.
 - Cloud-only files report 0 blocks (`du` shows 0; `ls -l` shows the real size).
 - Each file's state is exposed in the `user.openod.status` extended attribute (`cloud` or `local`).
+- Thumbnailers and indexers cannot download cloud-only files (see below).
+- Clean unmount on Ctrl+C and `SIGTERM`, even when the mount is busy.
+- The token cache and downloaded files live in owner-only directories (`0700`).
 - A demo cloud (`--demo`) for testing without an account.
+
+### Thumbnailers and indexers
+
+Desktop services open files on their own: Nautilus runs a thumbnailer for every document and image in a folder, and the GNOME indexer (`localsearch`) reads everything under your home folder. Left alone, they would silently download your whole drive.
+
+open-od looks up the process behind each `open()` (through `/proc/<pid>/comm`, which also works inside bubblewrap sandboxes) and refuses to download a cloud-only file for thumbnailers and indexers (`*-thumbnailer`, `glycin-*`, `localsearch*`, `tracker-*`, `baloo*`). Files that are already local are served normally. The mount root also exposes an empty, read-only `.trackerignore`, so `localsearch` skips the drive entirely.
+
+The trade-off: cloud-only files show no thumbnail, and a thumbnailer may remember the failure until the file changes.
 
 ## Known limitations
 
-- **Thumbnailers and the GNOME indexer trigger downloads.** Nautilus downloads documents and images to generate thumbnails, and `localsearch` may download everything if it indexes your home folder. The fix (blocking those processes and exposing a virtual `.trackerignore`) is the next task.
 - No writing, renaming or deleting yet.
 - No offline mode: listings live in memory only.
 - No "Free up space" or "Always keep on this device".
 - Opening a large file waits for the whole download (no `Range` reads).
-- `SIGTERM` is not handled; use Ctrl+C or `fusermount3 -u`.
 - x86_64 only: the `struct stat` layout is hard-coded.
 
 ## Requirements
@@ -74,7 +83,7 @@ Ctrl+C unmounts. `open-od logout` removes the saved token.
 
 open-od signs in through its own app registered in Microsoft Entra ID (client ID `b369d8b9-f994-44c5-a502-107689ab42dc`). It accepts personal and work/school accounts and only requests `Files.Read`, `User.Read` and `offline_access`. The client ID is not a secret: desktop apps are public clients and use no client secret.
 
-The token is stored in the system keyring (libsecret). If no keyring is available, it falls back to `~/.cache/open-od/msal.cache`.
+The token is stored in the system keyring (libsecret). If no keyring is available, it falls back to `~/.cache/open-od/msal.cache` (mode `0600`, inside a `0700` directory).
 
 To use your own app instead (for example, if your organization blocks third-party apps), register an app for personal and organizational accounts, enable "Allow public client flows", add the delegated `Files.Read` permission, and run `open-od login --client-id <ID>` or set `OPENOD_CLIENT_ID`.
 
@@ -99,12 +108,15 @@ libfuse calls these methods from its own threads (multithreaded mode). No except
 
 ## Roadmap
 
-1. Block thumbnailing and indexing of cloud-only files; handle `SIGTERM`.
-2. Local state in SQLite, keyed by item ID and fed by Graph delta queries (offline mode).
-3. "Always keep on this device" and "Free up space".
-4. Partial reads with `Range`.
-5. Writing, with uploads using `If-Match` and a conflict copy when Graph answers 412.
-6. D-Bus service, Nautilus extension, GNOME Shell extension and a GTK4/libadwaita settings window.
+1. Local state in SQLite, keyed by item ID and fed by Graph delta queries (offline mode).
+2. "Always keep on this device" and "Free up space".
+3. Partial reads with `Range`.
+4. Writing, with uploads using `If-Match` and a conflict copy when Graph answers 412.
+5. D-Bus service, Nautilus extension, GNOME Shell extension and a GTK4/libadwaita settings window.
+
+## Security
+
+Please report vulnerabilities privately. See [SECURITY.md](SECURITY.md).
 
 ## License
 

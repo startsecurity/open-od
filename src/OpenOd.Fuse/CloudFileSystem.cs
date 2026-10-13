@@ -19,6 +19,13 @@ public static unsafe class CloudFileSystem
     // A Nautilus extension can read it to show emblems.
     private const string StatusXattr = "user.openod.status";
 
+    // Virtual empty file at the mount root. localsearch skips any directory that
+    // contains one, so the GNOME indexer never crawls (and downloads) the drive.
+    private const string IndexerMarker = "/.trackerignore";
+
+    // File handle id used for the virtual marker file (real handles start at 1).
+    private const ulong MarkerHandle = 0;
+
     private static DriveCache _cache = null!;
     private static readonly ConcurrentDictionary<ulong, SafeFileHandle> Handles = new();
     private static long _nextHandle;
@@ -68,6 +75,12 @@ public static unsafe class CloudFileSystem
     {
         return Guard(nameof(GetAttr), pathPtr, path =>
         {
+            if (path == IndexerMarker)
+            {
+                FillStat(stat, S_IFREG | 0b100_100_100, 0, 0, DriveCache.Root.LastModified, 1);
+                return 0;
+            }
+
             var entry = _cache.GetEntry(path);
             if (entry is null)
                 return -ENOENT;
@@ -110,8 +123,17 @@ public static unsafe class CloudFileSystem
             var fill = (delegate* unmanaged<IntPtr, byte*, IntPtr, long, int, int>)filler;
             AddDirEntry(fill, buf, ".");
             AddDirEntry(fill, buf, "..");
+
+            var isRoot = path == "/";
+            if (isRoot)
+                AddDirEntry(fill, buf, IndexerMarker[1..]);
+
             foreach (var child in children)
+            {
+                if (isRoot && "/" + child.Name == IndexerMarker)
+                    continue;
                 AddDirEntry(fill, buf, child.Name);
+            }
             return 0;
         });
     }
@@ -128,13 +150,26 @@ public static unsafe class CloudFileSystem
     {
         return Guard(nameof(Open), pathPtr, path =>
         {
+            if (path == IndexerMarker)
+            {
+                *(ulong*)(fi + FiFh) = MarkerHandle;
+                return 0;
+            }
+
             var entry = _cache.GetEntry(path);
             if (entry is null) return -ENOENT;
             if (entry.IsFolder) return -EISDIR;
 
+            var caller = CallerProcessName();
+            if (caller is not null && !_cache.IsHydrated(entry) && HydrationPolicy.IsBackgroundScanner(caller))
+            {
+                Log.Info($"not downloading {path} for {caller} (thumbnailer/indexer)");
+                return -EACCES;
+            }
+
             // Blocks until the download finishes. A real implementation can start
             // serving the first bytes earlier (Range requests).
-            var localPath = _cache.Hydrate(path, entry);
+            var localPath = _cache.Hydrate(path, entry, caller);
 
             var handle = File.OpenHandle(localPath, FileMode.Open, FileAccess.Read, FileShare.Read);
             var id = (ulong)Interlocked.Increment(ref _nextHandle);
@@ -148,6 +183,8 @@ public static unsafe class CloudFileSystem
     private static int Read(byte* pathPtr, byte* buffer, nuint size, long offset, byte* fi)
     {
         var id = *(ulong*)(fi + FiFh);
+        if (id == MarkerHandle)
+            return 0;
         if (!Handles.TryGetValue(id, out var handle))
             return -EIO;
 
@@ -175,7 +212,7 @@ public static unsafe class CloudFileSystem
     {
         return Guard(nameof(GetXattr), pathPtr, path =>
         {
-            if (Marshal.PtrToStringUTF8((IntPtr)namePtr) != StatusXattr)
+            if (path == IndexerMarker || Marshal.PtrToStringUTF8((IntPtr)namePtr) != StatusXattr)
                 return -ENODATA;
 
             var entry = _cache.GetEntry(path);
@@ -192,10 +229,36 @@ public static unsafe class CloudFileSystem
     {
         return Guard(nameof(ListXattr), pathPtr, path =>
         {
+            if (path == IndexerMarker)
+                return 0;
+
             var entry = _cache.GetEntry(path);
             if (entry is null) return -ENOENT;
             return entry.IsFolder ? 0 : CopyOut(Encoding.UTF8.GetBytes(StatusXattr + '\0'), list, size);
         });
+    }
+
+    // Name of the process behind the current FUSE request, from /proc/<pid>/comm.
+    // The kernel reports the pid in our pid namespace, so this also works for
+    // thumbnailers running inside a bubblewrap sandbox.
+    private static string? CallerProcessName()
+    {
+        var pid = *(int*)(FuseGetContext() + CtxPid);
+        if (pid <= 0)
+            return null;
+
+        try
+        {
+            return File.ReadAllText($"/proc/{pid}/comm").TrimEnd('\n');
+        }
+        catch (IOException)
+        {
+            return null; // the process already exited
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     // getxattr/listxattr convention: when size == 0, return the required size.

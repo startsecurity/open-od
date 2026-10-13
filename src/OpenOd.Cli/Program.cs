@@ -56,7 +56,7 @@ static async Task<int> LoginAsync(string[] args)
     var idx = Array.IndexOf(args, "--client-id");
     if (idx >= 0 && idx + 1 < args.Length)
     {
-        Directory.CreateDirectory(Paths.ConfigDir);
+        Paths.EnsurePrivateDirectory(Paths.ConfigDir);
         File.WriteAllText(Paths.ClientIdFile, args[idx + 1].Trim());
     }
 
@@ -91,21 +91,45 @@ static async Task<int> MountAsync(string mountPoint, bool demo, bool debug)
         backend = graph;
     }
 
+    Paths.EnsurePrivateDirectory(Paths.CacheDir);
+    Paths.EnsurePrivateDirectory(Paths.ContentRoot);
     var cache = new DriveCache(backend, Paths.ContentDir(demo ? "demo" : "onedrive"));
 
-    // libfuse does not install its own Ctrl+C handler because .NET already has one.
-    // So on Ctrl+C we request an unmount and the libfuse loop exits on its own.
-    Console.CancelKeyPress += (_, e) =>
+    // libfuse does not install its own signal handlers because .NET already has
+    // them. On Ctrl+C or SIGTERM (e.g. `systemctl --user stop`) we unmount, and the
+    // libfuse loop then exits on its own.
+    var unmounting = 0;
+    void OnSignal(PosixSignalContext ctx)
     {
-        e.Cancel = true;
-        Log.Info("unmounting...");
-        Process.Start("fusermount3", ["-u", mountPoint]);
-    };
+        ctx.Cancel = true;
+        if (Interlocked.Exchange(ref unmounting, 1) == 1)
+            return;
+
+        Log.Info($"{ctx.Signal} received, unmounting...");
+        if (RunFusermount("-u", mountPoint) == 0)
+            return;
+
+        // Still in use (an open file, or a shell sitting inside the mount): detach
+        // it now and exit shortly after, so stopping never hangs.
+        Log.Warn("mount is busy; detaching it");
+        RunFusermount("-uz", mountPoint);
+        _ = Task.Delay(TimeSpan.FromSeconds(3)).ContinueWith(_ => Environment.Exit(0));
+    }
+
+    using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, OnSignal);
+    using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, OnSignal);
 
     Log.Info($"mounted at {mountPoint} (Ctrl+C to quit)");
     var rc = CloudFileSystem.Mount(cache, mountPoint, debug);
     Log.Info($"unmounted (exit code {rc})");
     return rc;
+}
+
+static int RunFusermount(string option, string mountPoint)
+{
+    using var process = Process.Start("fusermount3", [option, mountPoint]);
+    process.WaitForExit();
+    return process.ExitCode;
 }
 
 static string RequireClientId()

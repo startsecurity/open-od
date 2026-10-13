@@ -26,7 +26,7 @@ public sealed class DriveCache
     {
         _backend = backend;
         _contentDir = contentDir;
-        Directory.CreateDirectory(contentDir);
+        Paths.EnsurePrivateDirectory(contentDir);
     }
 
     /// <summary>Returns the folder's children, or null if the folder does not exist.</summary>
@@ -93,14 +93,14 @@ public sealed class DriveCache
     /// Ensures the file content is on local disk and returns its path.
     /// This is where "on demand" happens: the download only runs when someone opens the file.
     /// </summary>
-    public string Hydrate(string path, DriveEntry entry)
+    public string Hydrate(string path, DriveEntry entry, string? requestedBy = null)
     {
         var target = ContentPath(entry);
         if (File.Exists(target))
             return target;
 
         // Concurrent opens of the same file share a single download.
-        var lazy = _downloads.GetOrAdd(target, _ => new Lazy<Task<string>>(() => DownloadAsync(path, entry, target)));
+        var lazy = _downloads.GetOrAdd(target, _ => new Lazy<Task<string>>(() => DownloadAsync(path, entry, target, requestedBy)));
         try
         {
             return lazy.Value.GetAwaiter().GetResult();
@@ -111,10 +111,10 @@ public sealed class DriveCache
         }
     }
 
-    private async Task<string> DownloadAsync(string path, DriveEntry entry, string target)
+    private async Task<string> DownloadAsync(string path, DriveEntry entry, string target, string? requestedBy)
     {
         var started = DateTime.UtcNow;
-        Log.Info($"downloading {path} ({FormatSize(entry.Size)})...");
+        Log.Info($"downloading {path} ({FormatSize(entry.Size)}){(requestedBy is null ? "" : $" for {requestedBy}")}...");
 
         var partial = target + ".part";
         try

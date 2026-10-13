@@ -32,6 +32,12 @@ internal static unsafe class FuseNative
     public static extern int FuseMainRealVersioned(
         int argc, IntPtr* argv, IntPtr* ops, nuint opSize, LibFuseVersion* version, IntPtr userData);
 
+    [DllImport(LibFuse, EntryPoint = "fuse_get_context")]
+    public static extern byte* FuseGetContext();
+
+    // Offset of pid in struct fuse_context (fuse*, uid_t, gid_t, pid_t, ...).
+    public const int CtxPid = 16;
+
     [DllImport(LibC)] public static extern uint getuid();
     [DllImport(LibC)] public static extern uint getgid();
 

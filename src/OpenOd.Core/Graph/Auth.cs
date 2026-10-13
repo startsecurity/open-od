@@ -6,7 +6,8 @@ namespace OpenOd.Core.Graph;
 
 // Microsoft account sign-in via MSAL (device code flow: open a URL in the
 // browser and enter a code). The token is stored in the system keyring
-// (libsecret) or, when no keyring is available, in a file readable only by you.
+// (libsecret) or, when no keyring is available, in a 0600 file inside the
+// 0700 cache directory.
 public sealed class Auth : IAccessTokenProvider
 {
     // The project's "open-od" app registration in Entra ID. Not a secret:
@@ -71,10 +72,10 @@ public sealed class Auth : IAccessTokenProvider
 
     private static async Task<MsalCacheHelper> CreateCacheHelperAsync()
     {
-        var dir = Paths.CacheDir;
-        Directory.CreateDirectory(dir);
+        var dir = Paths.EnsurePrivateDirectory(Paths.CacheDir);
+        var cacheFile = Path.Combine(dir, CacheFileName);
 
-        var keyring = new StorageCreationPropertiesBuilder("msal.cache", dir)
+        var keyring = new StorageCreationPropertiesBuilder(CacheFileName, dir)
             .WithLinuxKeyring(
                 "open-od.tokencache", MsalCacheHelper.LinuxKeyRingDefaultCollection, "open-od token cache",
                 new KeyValuePair<string, string>("Version", "1"),
@@ -85,15 +86,25 @@ public sealed class Auth : IAccessTokenProvider
         try
         {
             helper.VerifyPersistence();
+            Paths.RestrictToOwner(cacheFile);
             return helper;
         }
         catch (MsalCachePersistenceException)
         {
-            Log.Warn("system keyring unavailable; storing the token in a plain file instead");
-            var file = new StorageCreationPropertiesBuilder("msal.cache", dir)
+            Log.Warn("system keyring unavailable; storing the token in a 0600 file instead");
+
+            // Create the file with the right mode up front so the token is never
+            // written to a world-readable file, even briefly.
+            if (!File.Exists(cacheFile))
+                File.Create(cacheFile, 0, FileOptions.None).Dispose();
+            Paths.RestrictToOwner(cacheFile);
+
+            var file = new StorageCreationPropertiesBuilder(CacheFileName, dir)
                 .WithLinuxUnprotectedFile()
                 .Build();
             return await MsalCacheHelper.CreateAsync(file);
         }
     }
+
+    private const string CacheFileName = "msal.cache";
 }
