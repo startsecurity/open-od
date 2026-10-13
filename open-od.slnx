@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/OpenOd.Cli/OpenOd.Cli.csproj" />
+    <Project Path="src/OpenOd.Core/OpenOd.Core.csproj" />
+    <Project Path="src/OpenOd.Fuse/OpenOd.Fuse.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/OpenOd.Core.Tests/OpenOd.Core.Tests.csproj" />
+  </Folder>
+</Solution>

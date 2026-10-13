@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>open-od</AssemblyName>
+    <RootNamespace>OpenOd.Cli</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenOd.Core\OpenOd.Core.csproj" />
+    <ProjectReference Include="..\OpenOd.Fuse\OpenOd.Fuse.csproj" />
+  </ItemGroup>
+
+</Project>
